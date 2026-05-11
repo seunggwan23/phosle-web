@@ -1,1 +1,397 @@
-<h1>포즐 웹사이트 준비중</h1>
+import streamlit as st
+import numpy as np
+import plotly.graph_objects as go
+
+st.set_page_config(page_title="건물 에너지 AI", page_icon="⚡", layout="wide")
+
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+*, html, body { font-family: 'Inter', sans-serif !important; }
+[data-testid="stApp"] { background: #0A0F1E !important; color: #E2E8F0 !important; }
+[data-testid="stSidebar"] { background: #0D1526 !important; border-right: 1px solid #1A2740 !important; }
+[data-testid="stSidebar"] * { color: #E2E8F0 !important; }
+.block-container { padding: 2rem 2.5rem !important; max-width: 1300px !important; }
+
+.hero { background: linear-gradient(135deg,#0D1526,#0F2040); border:1px solid #1A2740;
+        border-radius:20px; padding:28px 36px; margin-bottom:20px; }
+.hero-title { font-size:24px; font-weight:800;
+  background:linear-gradient(90deg,#50C878,#38BDF8);
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+.hero-sub { font-size:13px; color:#4A6080; margin-top:4px; }
+
+/* 핵심 결과 배너 */
+.result-banner { border-radius:18px; padding:28px 36px; margin-bottom:20px;
+                 display:flex; align-items:center; justify-content:space-between;
+                 border:1px solid; }
+.result-good { background:linear-gradient(135deg,#071A0E,#0A2A18); border-color:#1A5C35; }
+.result-bad  { background:linear-gradient(135deg,#1A0C07,#2A1510); border-color:#5C2A1A; }
+
+/* 등급 원 */
+.grade-circle { display:inline-flex; align-items:center; justify-content:center;
+  width:76px; height:76px; border-radius:50%; font-size:30px; font-weight:800; }
+.grade-A { background:rgba(80,200,120,.12); color:#50C878; border:2px solid rgba(80,200,120,.35); }
+.grade-B { background:rgba(56,189,248,.12); color:#38BDF8; border:2px solid rgba(56,189,248,.35); }
+.grade-C { background:rgba(255,179,71,.12); color:#FFB347; border:2px solid rgba(255,179,71,.35); }
+.grade-D { background:rgba(248,113,113,.12); color:#F87171; border:2px solid rgba(248,113,113,.35); }
+
+/* KPI 카드 */
+.kpi-row { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:20px; }
+.kpi { background:#0D1526; border:1px solid #1A2740; border-radius:14px; padding:18px 20px; }
+.kpi-label { font-size:11px; color:#4A6080; font-weight:600; text-transform:uppercase;
+             letter-spacing:.8px; }
+.kpi-value { font-size:26px; font-weight:800; margin:6px 0 4px; }
+.kpi-sub   { font-size:12px; color:#6B8AB0; }
+
+/* 인사이트 카드 */
+.tip { background:#0D1526; border:1px solid #1A2740; border-left:3px solid #50C878;
+       border-radius:10px; padding:13px 16px; margin:7px 0;
+       font-size:13px; line-height:1.7; color:#94A3B8; }
+.tip.warn { border-left-color:#FFB347; }
+.tip b { color:#E2E8F0; }
+
+/* 파라미터 상태 카드 */
+.param-card { background:#0D1526; border:1px solid #1A2740; border-radius:12px; padding:16px 18px; }
+.param-num  { font-size:22px; font-weight:800; color:#E2E8F0; margin:8px 0 4px; }
+.tag { display:inline-block; padding:3px 10px; border-radius:8px;
+       font-size:11px; font-weight:700; margin-top:6px; }
+.tag-up { background:rgba(248,113,113,.12); color:#F87171; }
+.tag-dn { background:rgba(80,200,120,.12); color:#50C878; }
+.tag-ok { background:rgba(56,189,248,.12); color:#38BDF8; }
+
+hr { border-color:#1A2740 !important; }
+</style>
+""", unsafe_allow_html=True)
+
+# ──────────────────────────────────────────────────────────────────
+# 에너지 계산 함수 (보정 계수 기반 현실적 모델)
+# 기준: 한국 업무용 건물 평균 에너지 강도 150 kWh/m²/년
+# ──────────────────────────────────────────────────────────────────
+BASE_INTENSITY_KWH_M2 = 150.0   # kWh/m²/년 (국토교통부 에너지 기준)
+ELEC_RATE_WON = 130             # 원/kWh (한전 일반용 평균 단가)
+PYEONG_TO_M2  = 3.3058          # 1평 = 3.3058 m²
+
+# 월별 에너지 분포 비중 (한국 기후 기준: 여름/겨울 집중)
+MONTHLY_WEIGHTS = np.array([0.10, 0.09, 0.07, 0.06, 0.07, 0.10,
+                             0.12, 0.12, 0.08, 0.07, 0.06, 0.06])
+MONTHLY_WEIGHTS = MONTHLY_WEIGHTS / MONTHLY_WEIGHTS.sum()  # 합계 1로 정규화
+
+
+def calc_annual_kwh(pyeong: float, wwr: float, insulation_mm: float,
+                    hvac_setpoint: float) -> float:
+    """
+    보정 계수 기반 연간 에너지 소비량(kWh) 계산.
+
+    - 평수(pyeong)에 선형 비례 → 두 배 크면 두 배 소비
+    - WWR: 0.3 기준, ±1% 변화당 냉방 부하 2% 변동
+      (현실적 범위: 최대 ±40%)
+    - 단열재: 150mm 기준, 50mm 감소당 난방 부하 8% 증가
+      (현실적 범위: 50mm→+24%, 400mm→-20%)
+    - HVAC 온도: 24°C 기준, 1°C 낮출수록 냉방 4% 증가
+      (현실적 범위: 18°C→+24%, 30°C→-24%)
+    - 각 보정값은 ±35% 이내로 클램핑 → 극단값 방지
+    """
+    floor_m2 = pyeong * PYEONG_TO_M2
+
+    # 창면적비 보정 (0.3 기준)
+    wwr_delta = np.clip((wwr - 0.3) * 2.0, -0.35, 0.35)
+
+    # 단열재 보정 (150mm 기준, 얇을수록 에너지 증가)
+    ins_delta = np.clip((150 - insulation_mm) / 150 * 0.30, -0.30, 0.30)
+
+    # HVAC 설정온도 보정 (24°C 기준)
+    hvac_delta = np.clip((24 - hvac_setpoint) * 0.04, -0.25, 0.25)
+
+    # 최종 에너지 강도 (kWh/m²/년)
+    intensity = BASE_INTENSITY_KWH_M2 * (1 + wwr_delta + ins_delta + hvac_delta)
+
+    return intensity * floor_m2
+
+
+def monthly_breakdown(annual_kwh: float) -> np.ndarray:
+    """월별 에너지(kWh) 배열 반환"""
+    return MONTHLY_WEIGHTS * annual_kwh
+
+
+def won_to_manwon(won: float) -> str:
+    """원 → 만원 단위 문자열 (예: 234만원)"""
+    manwon = won / 10000
+    if manwon >= 1000:
+        return f"{manwon/100:.0f}억원"
+    return f"{manwon:,.0f}만원"
+
+
+# ──────────────────────────────────────────────────────────────────
+# 사이드바
+# ──────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("### ⚙️ 건물 조건 설정")
+    st.caption("슬라이더를 조절하면 결과가 즉시 바뀝니다")
+    st.markdown("---")
+
+    st.markdown("**🏢 건물 규모**")
+    pyeong = st.slider("건물 면적 (평)", 10, 1000, 100, 10,
+                       help="1평 ≈ 3.3m². 아파트 30평, 소형 사무실 50평, 중형 빌딩 300평 기준")
+
+    st.markdown("**🔧 건물 사양**")
+    wwr = st.slider("🪟 창면적비 (WWR)", 0.1, 0.8, 0.3, 0.05,
+                    help="창문이 외벽에서 차지하는 비율. 높을수록 여름 냉방 부하 증가")
+    insulation_mm = st.slider("🧱 단열재 두께 (mm)", 50, 400, 150, 10,
+                              help="두꺼울수록 냉난방 에너지 손실 감소")
+    hvac_setpoint = st.slider("🌡️ 냉난방 설정온도 (°C)", 18, 30, 24, 1,
+                              help="여름 냉방 기준. 낮을수록 냉방 부하 증가")
+
+    st.markdown("---")
+    floor_m2 = pyeong * PYEONG_TO_M2
+    st.markdown(f"""<div style='font-size:12px;color:#4A6080;line-height:2'>
+    📐 면적: <b style='color:#E2E8F0'>{pyeong}평</b> ({floor_m2:.0f} m²)<br>
+    📌 기준: WWR 0.30 / 단열 150mm / 24°C
+    </div>""", unsafe_allow_html=True)
+
+
+# ──────────────────────────────────────────────────────────────────
+# 핵심 계산
+# ──────────────────────────────────────────────────────────────────
+# 현재 설정 & 기준 설정 에너지
+kwh_now  = calc_annual_kwh(pyeong, wwr, insulation_mm, hvac_setpoint)
+kwh_base = calc_annual_kwh(pyeong, 0.3, 150, 24)  # 기준 조건
+
+diff_kwh  = kwh_base - kwh_now      # + 이면 절감, - 이면 증가
+diff_pct  = diff_kwh / kwh_base * 100
+
+# 비용
+cost_now  = kwh_now  * ELEC_RATE_WON   # 원/년
+cost_base = kwh_base * ELEC_RATE_WON
+cost_diff = abs(cost_base - cost_now)  # 원/년 절감 또는 증가
+
+is_saving = diff_kwh >= 0
+verb = "절감" if is_saving else "증가"
+color_main = "#50C878" if is_saving else "#F87171"
+color_bg   = "result-good" if is_saving else "result-bad"
+
+# 효율 등급
+if diff_pct >= 20:   grade, gc = "A+", "grade-A"
+elif diff_pct >= 10: grade, gc = "A",  "grade-A"
+elif diff_pct >= 0:  grade, gc = "B",  "grade-B"
+elif diff_pct >= -10: grade, gc = "C", "grade-C"
+else:                grade, gc = "D",  "grade-D"
+
+# 월별 데이터
+monthly_now  = monthly_breakdown(kwh_now)  / 1000  # MWh
+monthly_base = monthly_breakdown(kwh_base) / 1000  # MWh
+
+# 계절별 집계
+summer_idx = [5, 6, 7]   # 6,7,8월 (0-indexed)
+winter_idx = [11, 0, 1]  # 12,1,2월
+kwh_summer_now  = float(monthly_now[summer_idx].sum())
+kwh_winter_now  = float(monthly_now[winter_idx].sum())
+kwh_summer_base = float(monthly_base[summer_idx].sum())
+kwh_winter_base = float(monthly_base[winter_idx].sum())
+
+
+# ──────────────────────────────────────────────────────────────────
+# 헤더
+# ──────────────────────────────────────────────────────────────────
+st.markdown(f"""
+<div class="hero">
+  <div class="hero-title">⚡ 건물 에너지 절감 시뮬레이터</div>
+  <div class="hero-sub">
+    현재 설정: {pyeong}평 &nbsp;·&nbsp; 창면적비 {wwr:.0%} &nbsp;·&nbsp;
+    단열 {insulation_mm}mm &nbsp;·&nbsp; 설정온도 {hvac_setpoint}°C
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+
+# ──────────────────────────────────────────────────────────────────
+# 핵심 결과 배너 (가장 중요한 정보)
+# ──────────────────────────────────────────────────────────────────
+annual_str  = won_to_manwon(cost_diff)
+monthly_str = won_to_manwon(cost_diff / 12)
+
+st.markdown(f"""
+<div class="result-banner {color_bg}">
+  <div>
+    <div style="font-size:12px;color:#4A6080;font-weight:600;letter-spacing:1px;
+                text-transform:uppercase;margin-bottom:10px">
+      기준 조건 대비 &nbsp;·&nbsp; 연간 에너지 {verb}
+    </div>
+    <div style="font-size:48px;font-weight:800;color:{color_main};line-height:1">
+      {abs(diff_kwh)/1000:,.1f}
+      <span style="font-size:22px;font-weight:400;color:#4A6080"> MWh/년</span>
+    </div>
+    <div style="margin-top:12px;display:flex;gap:24px;align-items:center">
+      <div style="font-size:15px;color:#E2E8F0;font-weight:600">
+        💰 연간 &nbsp;<span style="color:{color_main};font-size:20px;font-weight:800">{annual_str}</span>
+        &nbsp;{verb}
+      </div>
+      <div style="font-size:13px;color:#6B8AB0">
+        월 평균 <span style="color:{color_main};font-weight:700">{monthly_str}</span> {verb}
+      </div>
+    </div>
+    <div style="margin-top:6px;font-size:12px;color:#4A6080">
+      현재 연간 전기요금 추정: <b style="color:#E2E8F0">{won_to_manwon(cost_now)}/년</b>
+      &nbsp;(기준: {won_to_manwon(cost_base)}/년)
+    </div>
+  </div>
+  <div style="text-align:center;flex-shrink:0;margin-left:32px">
+    <div class="grade-circle {gc}">{grade}</div>
+    <div style="font-size:11px;color:#4A6080;margin-top:8px;font-weight:600">에너지 효율 등급</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+
+# ──────────────────────────────────────────────────────────────────
+# KPI 3개 (여름·겨울·연간)
+# ──────────────────────────────────────────────────────────────────
+sc = "#50C878" if kwh_summer_base >= kwh_summer_now else "#F87171"
+wc = "#50C878" if kwh_winter_base >= kwh_winter_now else "#F87171"
+sv = "▼" if kwh_summer_base >= kwh_summer_now else "▲"
+wv = "▼" if kwh_winter_base >= kwh_winter_now else "▲"
+
+st.markdown(f"""
+<div class="kpi-row">
+  <div class="kpi">
+    <div class="kpi-label">☀️ 여름철 냉방 에너지</div>
+    <div class="kpi-value" style="color:#38BDF8">{kwh_summer_now:.1f} <span style="font-size:14px;color:#4A6080">MWh</span></div>
+    <div class="kpi-sub" style="color:{sc}">{sv} 기준 대비 {abs(kwh_summer_base-kwh_summer_now):.1f} MWh</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">❄️ 겨울철 난방 에너지</div>
+    <div class="kpi-value" style="color:#818CF8">{kwh_winter_now:.1f} <span style="font-size:14px;color:#4A6080">MWh</span></div>
+    <div class="kpi-sub" style="color:{wc}">{wv} 기준 대비 {abs(kwh_winter_base-kwh_winter_now):.1f} MWh</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">📅 연간 총 에너지</div>
+    <div class="kpi-value" style="color:#E2E8F0">{kwh_now/1000:.1f} <span style="font-size:14px;color:#4A6080">MWh</span></div>
+    <div class="kpi-sub">기준 {kwh_base/1000:.1f} MWh &nbsp;·&nbsp; {floor_m2:.0f} m²</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+
+# ──────────────────────────────────────────────────────────────────
+# 차트(좌) + 인사이트(우)
+# ──────────────────────────────────────────────────────────────────
+col1, col2 = st.columns([3, 2])
+
+with col1:
+    MONTHS = ["1월","2월","3월","4월","5월","6월","7월","8월","9월","10월","11월","12월"]
+    DARK, CARD, GRID = "#0A0F1E", "#0D1526", "#1A2740"
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=MONTHS, y=monthly_base,
+        name="기준 조건 (WWR 0.3 / 단열 150mm / 24°C)",
+        marker_color="rgba(107,138,176,0.35)",
+        hovertemplate="%{x} 기준: %{y:.2f} MWh<extra></extra>"
+    ))
+    fig.add_trace(go.Bar(
+        x=MONTHS, y=monthly_now,
+        name="현재 설정",
+        marker=dict(color=[color_main]*12),
+        hovertemplate="%{x} 현재: %{y:.2f} MWh<extra></extra>"
+    ))
+    fig.update_layout(
+        paper_bgcolor=DARK, plot_bgcolor=CARD,
+        font=dict(family="Inter", color="#E2E8F0"),
+        title=dict(text="📅 월별 에너지 소비량 비교", font=dict(size=14)),
+        xaxis=dict(gridcolor=GRID, linecolor=GRID),
+        yaxis=dict(gridcolor=GRID, linecolor=GRID, title="에너지 (MWh)"),
+        barmode="group", bargap=0.25,
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#94A3B8"), orientation="h",
+                    yanchor="bottom", y=1.02, xanchor="left", x=0),
+        margin=dict(l=16, r=16, t=64, b=16), height=360,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+with col2:
+    st.markdown("#### 💡 개선 포인트")
+
+    tips = []
+
+    # 창면적비
+    if wwr > 0.5:
+        saving_kwh = calc_annual_kwh(pyeong, 0.4, insulation_mm, hvac_setpoint) - kwh_now
+        extra_cost = abs(saving_kwh) * ELEC_RATE_WON
+        tips.append(("warn",
+            f"<b>창면적비 {wwr:.0%}가 높습니다.</b><br>"
+            f"0.4로 낮추면 연간 <b style='color:#50C878'>{won_to_manwon(extra_cost)} 절감</b> 가능.<br>"
+            f"→ 외부 차양(루버/필름) 설치를 권장합니다."))
+    elif wwr < 0.2:
+        tips.append(("ok",
+            f"<b>창면적비 {wwr:.0%}</b> — 냉방 부하 최소화.<br>"
+            f"단, 자연채광 부족으로 조명 에너지가 늘 수 있습니다."))
+    else:
+        tips.append(("ok", f"<b>창면적비 {wwr:.0%}</b>는 적정 범위입니다."))
+
+    # 단열재
+    if insulation_mm < 100:
+        saving_kwh = kwh_now - calc_annual_kwh(pyeong, wwr, 150, hvac_setpoint)
+        extra_cost = abs(saving_kwh) * ELEC_RATE_WON
+        tips.append(("warn",
+            f"<b>단열재 {insulation_mm}mm는 너무 얇습니다.</b><br>"
+            f"150mm로 강화하면 연간 <b style='color:#50C878'>{won_to_manwon(extra_cost)} 절감</b> 가능.<br>"
+            f"→ 외단열 시스템 적용을 검토하세요."))
+    elif insulation_mm >= 250:
+        tips.append(("ok",
+            f"<b>단열재 {insulation_mm}mm</b> — 고성능 단열 확보.<br>"
+            f"냉난방 에너지 손실이 최소화됩니다."))
+    else:
+        tips.append(("ok", f"<b>단열재 {insulation_mm}mm</b>는 적정 수준입니다."))
+
+    # HVAC
+    if hvac_setpoint < 22:
+        saving_kwh = kwh_now - calc_annual_kwh(pyeong, wwr, insulation_mm, 24)
+        extra_cost = abs(saving_kwh) * ELEC_RATE_WON
+        tips.append(("warn",
+            f"<b>설정온도 {hvac_setpoint}°C는 낮습니다.</b><br>"
+            f"24°C로 올리면 연간 <b style='color:#50C878'>{won_to_manwon(extra_cost)} 절감</b> 가능.<br>"
+            f"→ 여름 냉방 권장 온도는 26°C입니다."))
+    elif hvac_setpoint > 26:
+        saving_kwh = kwh_now - calc_annual_kwh(pyeong, wwr, insulation_mm, 24)
+        extra_cost = abs(saving_kwh) * ELEC_RATE_WON
+        tips.append(("warn",
+            f"<b>설정온도 {hvac_setpoint}°C는 높습니다.</b><br>"
+            f"24°C로 낮추면 연간 <b style='color:#50C878'>{won_to_manwon(extra_cost)} 절감</b> 가능."))
+    else:
+        tips.append(("ok", f"<b>설정온도 {hvac_setpoint}°C</b>는 적정 범위입니다."))
+
+    for cls, txt in tips:
+        st.markdown(f'<div class="tip {"warn" if cls=="warn" else ""}">{txt}</div>',
+                    unsafe_allow_html=True)
+
+
+# ──────────────────────────────────────────────────────────────────
+# 파라미터 현황 카드 3개
+# ──────────────────────────────────────────────────────────────────
+st.markdown("---")
+st.markdown("#### 현재 설정 요약")
+c1, c2, c3 = st.columns(3)
+
+params = [
+    (c1, "🪟 창면적비", f"{wwr:.0%}", "0.30", wwr > 0.35, wwr < 0.25,
+     "높으면 냉방 부하 증가", "낮으면 냉방 부하 감소"),
+    (c2, "🧱 단열재 두께", f"{insulation_mm}mm", "150mm", insulation_mm < 120, insulation_mm > 200,
+     "얇으면 에너지 손실", "두꺼우면 에너지 절감"),
+    (c3, "🌡️ 설정온도", f"{hvac_setpoint}°C", "24°C", hvac_setpoint < 22, hvac_setpoint > 26,
+     "너무 낮으면 냉방 증가", "너무 높으면 난방 증가"),
+]
+
+for col, name, val, base_val, is_bad, is_good_dir, bad_msg, good_msg in params:
+    with col:
+        if is_bad:
+            tag = f'<span class="tag tag-up">⚠ {bad_msg}</span>'
+        elif is_good_dir:
+            tag = f'<span class="tag tag-dn">✓ {good_msg}</span>'
+        else:
+            tag = '<span class="tag tag-ok">✓ 적정 범위</span>'
+        col.markdown(f"""
+        <div class="param-card">
+          <div style="font-size:11px;color:#4A6080;font-weight:600">{name}</div>
+          <div class="param-num">{val}</div>
+          <div style="font-size:12px;color:#4A6080">기준: {base_val}</div>
+          {tag}
+        </div>
+        """, unsafe_allow_html=True)
