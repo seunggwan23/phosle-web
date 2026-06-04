@@ -18,6 +18,9 @@ SUBSIDIES = [
         "url": "https://www.greenremodeling.or.kr",
         "building_types": ["아파트", "단독주택", "상가/오피스"],
         "min_age": "15~30년",
+        "direct_cash_manwon": 150,  # 이자 지원 효과 환산액
+        "period_str": "연중 상시",
+        "is_local": False,
     },
     {
         "name": "💡 건물에너지효율화 사업 (BRP)",
@@ -28,6 +31,9 @@ SUBSIDIES = [
         "url": "https://bpr.kemco.or.kr",
         "building_types": ["상가/오피스"],
         "min_age": None,
+        "direct_cash_manwon": 500,  # 평균 지원금 환산액
+        "period_str": "상반기 공고",
+        "is_local": False,
     },
     {
         "name": "🌿 에너지바우처 지원 사업",
@@ -38,6 +44,9 @@ SUBSIDIES = [
         "url": "https://www.energyv.or.kr",
         "building_types": ["아파트", "단독주택"],
         "min_age": None,
+        "direct_cash_manwon": 19,
+        "period_str": "10월 ~ 익년 5월",
+        "is_local": False,
     },
     {
         "name": "🪟 노후 창호 교체 지원",
@@ -48,6 +57,9 @@ SUBSIDIES = [
         "url": "각 지자체 홈페이지 확인",
         "building_types": ["아파트", "단독주택"],
         "min_age": "15~30년",
+        "direct_cash_manwon": 200,
+        "period_str": "지자체 예산 소진 시까지",
+        "is_local": True,
     },
     {
         "name": "🔥 노후 보일러 교체 지원",
@@ -58,6 +70,9 @@ SUBSIDIES = [
         "url": "https://www.kemco.or.kr",
         "building_types": ["아파트", "단독주택"],
         "min_age": "5~15년",
+        "direct_cash_manwon": 20,
+        "period_str": "예산 소진 시까지",
+        "is_local": False,
     },
     {
         "name": "☀️ 신재생에너지 보급 지원",
@@ -68,17 +83,21 @@ SUBSIDIES = [
         "url": "https://www.knrec.or.kr",
         "building_types": ["단독주택"],
         "min_age": None,
+        "direct_cash_manwon": 330,
+        "period_str": "3월 ~ 11월",
+        "is_local": False,
     },
 ]
 
 
-def get_matching_subsidies(building_type: str, age: str) -> list:
+def get_matching_subsidies(building_type: str, age: str, region: str = None) -> list:
     """
-    건물 유형과 연도에 맞는 보조금 필터링.
+    건물 유형과 연도, 지역에 맞는 보조금 필터링 및 우선순위 부여.
 
     Args:
         building_type: 아파트/단독주택/상가오피스
         age: 건축 연도 그룹
+        region: 사용자 지역명
 
     Returns:
         해당 조건에 맞는 보조금 목록
@@ -99,6 +118,16 @@ def get_matching_subsidies(building_type: str, age: str) -> list:
             if user_age_idx < min_idx:
                 continue
 
-        matched.append(s)
+        item = s.copy()
+        
+        # 지역 맞춤형 사업이면 _p_score = 0 (is_local 체크), 전국 공통이면 1
+        if item.get("is_local", False):
+            item["_p_score"] = 0
+        else:
+            item["_p_score"] = 1
 
+        matched.append(item)
+
+    # _p_score 오름차순 정렬 (0인 지역 매칭이 위로 올라감)
+    matched.sort(key=lambda x: x.get("_p_score", 1))
     return matched

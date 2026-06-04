@@ -11,14 +11,14 @@ import pandas as pd
 
 # ── 유틸리티 모듈 임포트 ──
 # pyrefly: ignore [missing-import]
-from 유틸리티.디자인_스타일 import get_main_css
-from 유틸리티.에너지_분석_엔진 import (
+from utils.styles import get_main_css
+from utils.energy_engine import (
     diagnose, won_to_manwon, ELEC_RATE, BUILDING_DEFAULTS,
     AGE_FACTOR, REGION_FACTOR,
 )
-from 유틸리티.절감_방안_추천 import get_top_recommendations, get_all_recommendations
-from 유틸리티.정부_보조금 import get_matching_subsidies
-from 유틸리티.기상_정보_조회 import (
+from utils.recommendations import get_top_recommendations, get_all_recommendations
+from utils.subsidies import get_matching_subsidies
+from utils.weather import (
     reverse_geocode, geocode, fetch_weather, calc_climate_factor,
     weather_code_to_text, CITY_COORDS,
 )
@@ -78,6 +78,16 @@ if "recorded_bills" not in st.session_state:
     st.session_state.recorded_bills = [12, 11, 9, 8, 9, 13, 18, 20, 14, 9, 8, 11]
 if "username" not in st.session_state:
     st.session_state.username = None
+if "building_type" not in st.session_state:
+    st.session_state.building_type = "아파트"
+if "age" not in st.session_state:
+    st.session_state.age = "5~15년"
+if "region" not in st.session_state:
+    st.session_state.region = "서울·경기"
+if "pyeong" not in st.session_state:
+    st.session_state.pyeong = 30
+if "discomfort_scores" not in st.session_state:
+    st.session_state.discomfort_scores = {"airtight": 2, "insulation": 2, "hvac": 2, "solar": 2}
 
 
 def go_next():
@@ -92,6 +102,7 @@ def go_to(n):
 def restart():
     for key in list(st.session_state.keys()):
         del st.session_state[key]
+    st.rerun()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -531,10 +542,14 @@ weight: 1
         ))
         fig_log.update_layout(
             paper_bgcolor="rgba(0,0,0,0)", 
-            plot_bgcolor="rgba(241,245,249,0.5)",
-            font=dict(family="Inter", color="#1E293B", size=11),
-            xaxis=dict(gridcolor="#E2E8F0", zeroline=False),
-            yaxis=dict(gridcolor="#E2E8F0", zeroline=False, title="전기요금 (만원)"),
+            plot_bgcolor="rgba(0,0,0,0)", # 완전히 투명하게 설정하여 다크 테마 배경에 스며들도록 함
+            font=dict(family="Inter", color="#6B8AB0", size=11), # 가독성을 위해 밝은 회청색 글꼴 색상 적용
+            xaxis=dict(gridcolor="#1A2740", zeroline=False), # 테마와 어울리는 짙은 남색 그리드 라인
+            yaxis=dict(
+                gridcolor="#1A2740", 
+                zeroline=False, 
+                title=dict(text="전기요금 (만원)", font=dict(color="#6B8AB0"))
+            ),
             height=280,
             margin=dict(l=10, r=10, t=20, b=10),
         )
@@ -840,12 +855,16 @@ def render_step3():
         hovertemplate="%{x} 내요금: <b>%{y}만원</b><extra></extra>"
     ))
     fig.update_layout(
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#F8FAFC",
-        font=dict(family="Inter", color="#1E293B"),
-        xaxis=dict(gridcolor="#E2E8F0"),
-        yaxis=dict(gridcolor="#E2E8F0", title="전기요금 (만원)"),
+        paper_bgcolor="rgba(0,0,0,0)", 
+        plot_bgcolor="rgba(0,0,0,0)", # 투명 배경 설정
+        font=dict(family="Inter", color="#6B8AB0"), # 축 레이블 색상 변경
+        xaxis=dict(gridcolor="#1A2740"),
+        yaxis=dict(
+            gridcolor="#1A2740", 
+            title=dict(text="전기요금 (만원)", font=dict(color="#6B8AB0"))
+        ),
         barmode="group", bargap=0.25, height=300,
-        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#475569"),
+        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#E2E8F0"), # 범례 글꼴 흰색 계열 적용
                     orientation="h", yanchor="bottom", y=1.02),
         margin=dict(l=16, r=16, t=40, b=16),
     )
@@ -1092,3 +1111,22 @@ else:
 # 실시간 자동 저장 로직 (모든 step에서 값이 바뀌면 자동 기록)
 if st.session_state.get("username"):
     save_user_data(st.session_state.username, st.session_state.recorded_bills)
+
+# ── 웹앱 Wakeup / Keep-alive 유지 (브라우저 유휴 상태 수면 방지) ──
+# 사용자가 브라우저 창을 띄워놓고 오랫동안 조작하지 않아도,
+# 1분마다 서버의 헬스체크 API를 호출하여 WebSocket 연결 해제 및 Streamlit Cloud의 절전 모드 진입을 방지합니다.
+keep_alive_js = """
+<script>
+    setInterval(function() {
+        fetch('/_stcore/health')
+            .then(response => {
+                if(response.ok) {
+                    console.log('Keep-alive ping sent to Streamlit server');
+                }
+            })
+            .catch(error => console.warn('Keep-alive ping failed', error));
+    }, 60000); // 60초(1분)마다 반복 호출
+</script>
+"""
+components.html(keep_alive_js, height=0, width=0)
+

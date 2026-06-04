@@ -54,7 +54,7 @@ DISCOMFORT_EFFECTS = {
 
 
 def map_inputs(building_type: str, age: str, region: str,
-               discomforts: list, climate_factor: float = None) -> dict:
+               discomfort_scores: dict, climate_factor: float = None) -> dict:
     """
     일반인 입력을 기술 파라미터로 변환.
 
@@ -75,15 +75,26 @@ def map_inputs(building_type: str, age: str, region: str,
     hvac_eff = base["hvac_eff"]
     extra_loss = 0.0
 
-    for d in discomforts:
-        eff = DISCOMFORT_EFFECTS.get(d, {})
-        wwr += eff.get("wwr_add", 0)
-        if "insulation_mult" in eff:
-            insulation *= eff["insulation_mult"]
-        if "hvac_mult" in eff:
-            hvac_eff *= eff["hvac_mult"]
-        extra_loss += eff.get("airtight_loss", 0)
-        extra_loss += eff.get("overall_add", 0)
+    # 정량 설문 점수 반영 (기본 2단계를 기준으로 보정)
+    # 1. 외풍 차단 수준 (기밀성): airtight (1~5)
+    airtight_val = discomfort_scores.get("airtight", 2)
+    if airtight_val > 1:
+        extra_loss += (airtight_val - 1) * 0.05
+
+    # 2. 실내 온도 보존력 (단열성): insulation (1~5)
+    insulation_val = discomfort_scores.get("insulation", 2)
+    insulation_mult = 1.0 - (insulation_val - 2) * 0.15
+    insulation *= max(0.3, insulation_mult)
+
+    # 3. 냉난방 도달 속도 (설비 효율): hvac (1~5)
+    hvac_val = discomfort_scores.get("hvac", 2)
+    hvac_mult = 1.0 - (hvac_val - 2) * 0.12
+    hvac_eff *= max(0.4, hvac_mult)
+
+    # 4. 여름철 일사 부하 (채광열): solar (1~5)
+    solar_val = discomfort_scores.get("solar", 2)
+    if solar_val > 2:
+        wwr += (solar_val - 2) * 0.05
 
     return {
         "wwr": min(wwr, 0.8),
@@ -143,8 +154,8 @@ def won_to_manwon(won: float) -> str:
     return f"{mw:,.0f}만원"
 
 
-def diagnose(pyeong, building_type, age, region, discomforts,
-             monthly_bill=None, climate_factor=None):
+def diagnose(pyeong, building_type, age, region, discomfort_scores,
+             recorded_bills=None, climate_factor=None):
     """
     전체 진단을 수행하고 결과 딕셔너리 반환.
 
@@ -154,7 +165,7 @@ def diagnose(pyeong, building_type, age, region, discomforts,
     Returns:
         dict: 진단 결과 전체 (에너지, 등급, 비용, 게이지 등)
     """
-    params = map_inputs(building_type, age, region, discomforts, climate_factor)
+    params = map_inputs(building_type, age, region, discomfort_scores, climate_factor)
 
     current_kwh = calc_annual_kwh(
         pyeong, params["wwr"], params["insulation_mm"],

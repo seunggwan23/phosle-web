@@ -73,6 +73,42 @@ def reverse_geocode(lat: float, lng: float) -> dict:
         }
 
 
+def geocode(address: str) -> dict:
+    """
+    주소 → 위도/경도 변환 (Nominatim/OpenStreetMap 사용)
+
+    Returns:
+        dict: lat(float), lng(float), display_name(str), success(bool)
+    """
+    try:
+        resp = requests.get("https://nominatim.openstreetmap.org/search", params={
+            "q": address,
+            "format": "json",
+            "accept-language": "ko",
+            "limit": 1
+        }, headers={"User-Agent": "EnergyCoachApp/1.0"}, timeout=5)
+        data = resp.json()
+
+        if data:
+            first = data[0]
+            return {
+                "lat": float(first["lat"]),
+                "lng": float(first["lon"]),
+                "display_name": first.get("display_name", ""),
+                "success": True,
+            }
+        else:
+            return {
+                "success": False,
+                "error": "검색 결과가 없습니다."
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+        }
+
+
 def fetch_weather(lat: float, lng: float) -> dict:
     """
     Open-Meteo API로 현재 기상 데이터 + 연간 평균 가져오기.

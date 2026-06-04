@@ -150,3 +150,9 @@ def get_top_recommendations(diagnosis: dict, pyeong: float, top_n: int = 3) -> l
     scored.sort(key=lambda x: x["priority"], reverse=True)
 
     return scored[:top_n]
+
+def get_all_recommendations(diagnosis: dict, pyeong: float) -> list:
+    """
+    모든 개선안을 우선순위 순으로 정렬하여 반환합니다.
+    """
+    return get_top_recommendations(diagnosis, pyeong, top_n=len(RECOMMENDATIONS_DB))
